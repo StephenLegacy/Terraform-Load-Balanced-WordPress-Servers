@@ -1,0 +1,305 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for setting up a scalable web project using EC2 instances.
+
+Parameters:
+  # Parameter for specifying the EC2 KeyPair name
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+    Type: String
+    MinLength: 1 # Ensure that a non-empty value is provided
+
+  # Parameter for specifying the Ubuntu AMI ID
+  UbuntuAMI:
+    Description: The Ubuntu AMI ID to use for the instances
+    Type: String
+    Default: ami-0aff18ec83b712f05 # Replace with a default AMI ID or leave blank if no default
+
+Resources:
+  # Create a new VPC
+  CloudProjectVer2VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: "10.0.0.0/16"
+      Tags:
+        - Key: Name
+          Value: CloudProjectVer2VPC
+
+  # Create public subnets in different Availability Zones
+  CloudProjectVer2SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CloudProjectVer2VPC
+      CidrBlock: "10.0.1.0/24"
+      AvailabilityZone: "us-west-2a"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: CloudProjectVer2SubnetA
+
+  CloudProjectVer2SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CloudProjectVer2VPC
+      CidrBlock: "10.0.5.0/24"
+      AvailabilityZone: "us-west-2b"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: CloudProjectVer2SubnetB
+
+  # Create an internet gateway
+  CloudProjectVer2IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: CloudProjectVer2IGW
+
+  # Attach the internet gateway to the VPC
+  CloudProjectVer2IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref CloudProjectVer2VPC
+      InternetGatewayId: !Ref CloudProjectVer2IGW
+
+  # Create a route table
+  CloudProjectVer2RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CloudProjectVer2VPC
+      Tags:
+        - Key: Name
+          Value: CloudProjectVer2RouteTable
+
+  # Create a route to the internet gateway for outbound internet access
+  CloudProjectVer2Route:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref CloudProjectVer2RouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref CloudProjectVer2IGW
+
+  # Associate the route table with the subnets
+  CloudProjectVer2RTA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref CloudProjectVer2SubnetA
+      RouteTableId: !Ref CloudProjectVer2RouteTable
+
+  CloudProjectVer2RTB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref CloudProjectVer2SubnetB
+      RouteTableId: !Ref CloudProjectVer2RouteTable
+
+  # Security Group to allow HTTP and SSH access
+  CloudProjectVer2SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref CloudProjectVer2VPC
+      GroupDescription: Allow inbound traffic for HTTP and SSH
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "0.0.0.0/0"
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: "0.0.0.0/0"
+      Tags:
+        - Key: Name
+          Value: CloudProjectVer2SG
+
+  # Launch Configuration for Auto Scaling Group
+  CloudProjectVer2LC:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref UbuntuAMI
+      InstanceType: t2.micro
+      SecurityGroups: 
+        - !Ref CloudProjectVer2SG
+      UserData: !Base64 |
+        #!/bin/bash
+        apt-get update -y
+        apt-get install -y apache2
+        systemctl start apache2
+        systemctl enable apache2
+        # Remove default Apache index.html if it exists
+        rm -f /var/www/html/index.html
+        # Upload your website files to /var/www/html here
+      KeyName: !Ref KeyName # Ensure this is provided and not empty
+
+  # Application Load Balancer
+  CloudProjectVer2LB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${AWS::StackName}-lb"
+      Subnets:
+        - !Ref CloudProjectVer2SubnetA
+        - !Ref CloudProjectVer2SubnetB
+      SecurityGroups:
+        - !Ref CloudProjectVer2SG
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+
+  # Target Group for the Load Balancer
+  CloudProjectVer2TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${AWS::StackName}-tg"
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref CloudProjectVer2VPC
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+
+  # Listener for the Load Balancer
+  CloudProjectVer2Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref CloudProjectVer2TargetGroup
+      LoadBalancerArn: !Ref CloudProjectVer2LB
+      Port: 80
+      Protocol: HTTP
+
+  # Auto Scaling Group
+  CloudProjectVer2ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchConfigurationName: !Ref CloudProjectVer2LC
+      MinSize: 2
+      DesiredCapacity: 3
+      MaxSize: 5
+      VPCZoneIdentifier:
+        - !Ref CloudProjectVer2SubnetA
+        - !Ref CloudProjectVer2SubnetB
+      TargetGroupARNs:
+        - !Ref CloudProjectVer2TargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Name
+          Value: CloudProjectVer2Server
+          PropagateAtLaunch: true
+
+  # Auto Scaling Policy
+  CloudProjectVer2ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      PolicyType: SimpleScaling
+      AutoScalingGroupName: !Ref CloudProjectVer2ASG
+      ScalingAdjustment: 1
+      AdjustmentType: ChangeInCapacity
+      Cooldown: 300
+
+  # CloudWatch Alarm for CPU Utilization
+  CloudProjectVer2CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: cpu_high
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Period: 300
+      Statistic: Average
+      Threshold: 50
+      AlarmDescription: This metric monitors EC2 CPU utilization
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref CloudProjectVer2ASG
+      AlarmActions:
+        - !Ref CloudProjectVer2ScaleUpPolicy
+
+Outputs:
+  # Output the VPC ID
+  VPCID:
+    Description: The ID of the VPC
+    Value: !Ref CloudProjectVer2VPC
+
+  # Output the IDs of the public subnets
+  SubnetIDs:
+    Description: The IDs of the public subnets
+    Value: !Join [",", [!Ref CloudProjectVer2SubnetA, !Ref CloudProjectVer2SubnetB]]
+
+  # Output the ID of the Internet Gateway
+  InternetGatewayID:
+    Description: The ID of the Internet Gateway
+    Value: !Ref CloudProjectVer2IGW
+
+  # Output the ID of the Route Table
+  RouteTableID:
+    Description: The ID of the Route Table
+    Value: !Ref CloudProjectVer2RouteTable
+
+  # Output the ID of the Security Group
+  SecurityGroupID:
+    Description: The ID of the Security Group
+    Value: !Ref CloudProjectVer2SG
+
+  # Output the ID of the Launch Configuration
+  LaunchConfigurationID:
+    Description: The ID of the Launch Configuration
+    Value: !Ref CloudProjectVer2LC
+
+  # Output details of the Auto Scaling Group
+  AutoScalingGroupDetails:
+    Description: Details of the Auto Scaling Group
+    Value: !Sub |
+      AutoScalingGroupName: ${CloudProjectVer2ASG}
+      MinSize: 2
+      DesiredCapacity: 3
+      MaxSize: 5
+      VPCZoneIdentifier: ${CloudProjectVer2SubnetA},${CloudProjectVer2SubnetB}
+      TargetGroupARNs: ${CloudProjectVer2TargetGroup}
+
+  # Output details of the Load Balancer
+  LoadBalancerDetails:
+    Description: Details of the Load Balancer
+    Value: !Sub |
+      LoadBalancerName: ${CloudProjectVer2LB}
+      DNSName: ${CloudProjectVer2LB.DNSName}
+      LoadBalancerArn: ${CloudProjectVer2LB.LoadBalancerArn}
+
+  # Output details of the Target Group
+  TargetGroupDetails:
+    Description: Details of the Target Group
+    Value: !Sub |
+      TargetGroupName: ${CloudProjectVer2TargetGroup}
+      TargetGroupArn: ${CloudProjectVer2TargetGroup.TargetGroupArn}
+      Port: 80
+      Protocol: HTTP
+
+  # Output details of the Load Balancer Listener
+  ListenerDetails:
+    Description: Details of the Load Balancer Listener
+    Value: !Sub |
+      ListenerArn: ${CloudProjectVer2Listener.ListenerArn}
+      Port: 80
+      Protocol: HTTP
+
+  # Output details of the CloudWatch Alarm
+  CloudWatchAlarmDetails:
+    Description: Details of the CloudWatch Alarm
+    Value: !Sub |
+      AlarmName: ${CloudProjectVer2CPUAlarm}
+      Threshold: 50
+      ComparisonOperator: GreaterThanThreshold
+
+  # Output details of the Auto Scaling Policy
+  AutoScalingPolicyDetails:
+    Description: Details of the Auto Scaling Policy
+    Value: !Sub |
+      PolicyName: ${CloudProjectVer2ScaleUpPolicy}
+      ScalingAdjustment: 1
+      AdjustmentType: ChangeInCapacity
