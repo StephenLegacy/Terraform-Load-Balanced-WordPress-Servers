@@ -1,40 +1,42 @@
-# Define AWS provider and region
 provider "aws" {
-  region = var.region # Define your AWS region in the variable section below
+  region = var.region
 }
 
-# Variables section
 variable "domain_name" {
-  default = "techconsultio.com" # Replace with your actual domain name
+  default = "techconsultio.com"  # Your domain name
 }
 
 variable "region" {
-  default = "us-west-2" # Replace with your preferred AWS region
+  default = "us-west-2"  # AWS region
 }
 
-# Create S3 Bucket for Static Website Hosting
-resource "aws_s3_bucket" "webs3_static_website" {
-  bucket = "webs3-${var.domain_name}-website" # Custom S3 bucket name with prefix webs3
+variable "local_files_path" {
+  default = "C:/Users/oloos/OneDrive/Desktop/GitCloneWeb"  # Local path for cloning GitHub repository
+}
 
+variable "github_repo_url" {
+  description = "URL of the GitHub repository to clone files from"
+  type        = string
+  default     = "https://github.com/StephenLegacy/WebSiteProjectDummy"  # GitHub repo URL
+}
+
+resource "aws_s3_bucket" "webs3_static_website" {
+  bucket = "webs3-${var.domain_name}-website"
   tags = {
     Name = "webs3-static-website"
   }
 }
 
-# Configure Public Access Block for S3 Bucket
 resource "aws_s3_bucket_public_access_block" "webs3_static_website" {
   bucket = aws_s3_bucket.webs3_static_website.id
-
   block_public_acls       = false
   ignore_public_acls      = false
   block_public_policy     = false
   restrict_public_buckets = false
 }
 
-# Configure Website Hosting for S3 Bucket
 resource "aws_s3_bucket_website_configuration" "webs3_static_website" {
   bucket = aws_s3_bucket.webs3_static_website.id
-
   index_document {
     suffix = "index.html"
   }
@@ -43,75 +45,43 @@ resource "aws_s3_bucket_website_configuration" "webs3_static_website" {
   }
 }
 
-# Upload files to S3 Bucket from GitHub
-resource "aws_s3_object" "webs3_index" {
+resource "aws_s3_bucket_policy" "webs3_static_website_policy" {
   bucket = aws_s3_bucket.webs3_static_website.id
-  key    = "index.html"
-  source = "index.html" # Ensure the file is available locally in the same directory as your Terraform script
-  acl    = "public-read"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Allow",
+        Principal = "*",
+        Action    = "s3:GetObject",
+        Resource  = "${aws_s3_bucket.webs3_static_website.arn}/*"
+      }
+    ]
+  })
+  depends_on = [aws_s3_bucket.webs3_static_website]
 }
 
-# Upload other necessary files to S3 Bucket from GitHub
-resource "aws_s3_object" "webs3_error" {
-  bucket = aws_s3_bucket.webs3_static_website.id
-  key    = "error.html"
-  source = "error.html" # Ensure the file is available locally in the same directory as your Terraform script
-  acl    = "public-read"
-}
-
-# Create Route 53 Zone for the domain
-resource "aws_route53_zone" "webs3_main" {
-  name = var.domain_name
-}
-
-# # Create ACM Certificate for the domain
-# resource "aws_acm_certificate" "webs3_main" {
-#   domain_name       = var.domain_name
-#   validation_method = "DNS"
-
-#   tags = {
-#     Name = "webs3-main-certificate"
-#   }
-# }
-
-# # Create Route 53 Record for Domain Validation
-# resource "aws_route53_record" "webs3_certificate_validation" {
-#   for_each = { for dvo in aws_acm_certificate.webs3_main.domain_validation_options : dvo.domain_name => dvo }
-
-#   zone_id = aws_route53_zone.webs3_main.id
-#   name    = each.value.resource_record_name
-#   type    = each.value.resource_record_type
-#   ttl     = 60
-#   records = [each.value.resource_record_value]
-# }
-
-# # Validate ACM Certificate
-# resource "aws_acm_certificate_validation" "webs3_main" {
-#   certificate_arn = aws_acm_certificate.webs3_main.arn
-
-#   validation_record_fqdns = [
-#     for record in aws_route53_record.webs3_certificate_validation : record.fqdn
-#   ]
-
-#   timeouts {
-#     create = "3h" # Increase timeout to 3 hours or as needed
-#   }
-# }
-
-# Route 53 Record for Static Website Hosting
-resource "aws_route53_record" "webs3_static_website" {
-  zone_id = aws_route53_zone.webs3_main.id
-  name    = var.domain_name
-  type    = "A"
-
-  alias {
-    name                   = aws_s3_bucket.webs3_static_website.bucket_regional_domain_name
-    zone_id                = aws_s3_bucket.webs3_static_website.hosted_zone_id
-    evaluate_target_health = true
+resource "null_resource" "download_files" {
+  provisioner "local-exec" {
+    command = <<EOT
+      # Ensure the local directory exists
+      mkdir -p ${var.local_files_path}
+      git clone ${var.github_repo_url} ${var.local_files_path}
+    EOT
   }
 }
 
-# Outputs section
+resource "aws_s3_object" "webs3_files" {
+  for_each = fileset(var.local_files_path, "*")
+
+  bucket = aws_s3_bucket.webs3_static_website.id
+  key    = each.value
+  source = "${var.local_files_path}/${each.value}"
+  acl    = "public-read"
+
+  depends_on = [null_resource.download_files]
+}
+
 output "website_url" {
   value = "http://${aws_s3_bucket.webs3_static_website.bucket}.s3-website-${var.region}.amazonaws.com"
 }
@@ -121,17 +91,45 @@ output "s3_bucket_name" {
 }
 
 output "s3_bucket_website_url" {
-  value = aws_s3_bucket.webs3_static_website.website_endpoint
+  value = "http://${aws_s3_bucket.webs3_static_website.bucket}.s3-website-${var.region}.amazonaws.com"
 }
 
-output "route53_zone_id" {
-  value = aws_route53_zone.webs3_main.id
-}
+# Route 53 Configuration (Commented Out)
 
-output "route53_record_name" {
-  value = aws_route53_record.webs3_static_website.name
-}
+# resource "aws_route53_zone" "main" {
+#   name = var.domain_name
+# }
 
-# output "certificate_arn" {
-#   value = aws_acm_certificate.webs3_main.arn
+# resource "aws_route53_record" "www" {
+#   zone_id = aws_route53_zone.main.id
+#   name    = "www.${var.domain_name}"
+#   type    = "A"
+#   alias {
+#     name                   = aws_s3_bucket_website_configuration.webs3_static_website.website_endpoint
+#     zone_id                = aws_s3_bucket_website_configuration.webs3_static_website.hosted_zone_id
+#     evaluate_target_health = false
+#   }
+# }
+
+# resource "aws_acm_certificate" "cert" {
+#   domain_name       = var.domain_name
+#   validation_method = "DNS"
+
+#   tags = {
+#     Name = "cert-${var.domain_name}"
+#   }
+# }
+
+# resource "aws_route53_record" "cert_validation" {
+#   for_each = { for d in aws_acm_certificate.cert.domain_validation_options : d.domain_name => d }
+#   zone_id  = aws_route53_zone.main.id
+#   name     = each.value.resource_record_name
+#   type     = each.value.resource_record_type
+#   ttl      = 60
+#   records  = [each.value.resource_record_value]
+# }
+
+# resource "aws_acm_certificate_validation" "cert_validation" {
+#   certificate_arn         = aws_acm_certificate.cert.arn
+#   validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
 # }
