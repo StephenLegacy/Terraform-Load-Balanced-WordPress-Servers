@@ -49,12 +49,12 @@ Auto Scaling ensures that the number of EC2 instances adjusts according to the t
 
 ### S3 Bucket
 
-The S3 bucket is used to store static content such as images and other files that do not change frequently. It helps in offloading the static content delivery from the EC2 instances.
+The S3 bucket is used to store static content such as images and other files that do not change frequently. It helps in offloading the static content delivery from the EC2 instances. It is the main storage used in this case.
 
 **Resource Configuration**:
 ```hcl
 resource "aws_s3_bucket" "webs3_static_website" {
-  bucket = "webs3-${var.domain_name}-website"
+  bucket = "webs3-${var.domain_name}-website" //the bucket name is fetched automatically
   tags = {
     Name = "webs3-static-website"
   }
